@@ -256,9 +256,95 @@ Non Edge    = 0
 Weak Edge 중 Strong Edge와 연결된 픽셀만 Strong Edge로 변경 후, 
 최종적으로 Strong Edge만 Edge Node로 처리합니다.
 
+<img width="2874" height="1016" alt="sobel_nms_canny" src="https://github.com/user-attachments/assets/b553ea45-e24c-4deb-8b24-fd246b750e3b" />
+이미지는 왼쪽부터 **Sobel Gradient Magnitude → Non-Maximum Suppression(NMS) → 최종 Canny Edge Map** 순서입니다. 
+
+### Sobel Gradient Magnitude
+
+Sobel 단계에서는 영상의 밝기 변화율을 계산하여 경계 후보를 검출하기 때문인데, 
+한 프레임에서도 여러 픽셀이 동시에 큰 Gradient 값을 가지면서 선이 두껍거나 여러 겹으로 보일 수 있습니다. 또한, Sobel -> NMS -> Canny 과정에서 Sobel 가장 다양한 밝기 값을 가진 채로 표현됩니다.
+
+### Non-Maximum Suppression
+
+NMS에서는 Gradient 방향을 기준으로 주변 픽셀과 Magnitude를 비교하고, 해당 방향에서 Local Maximum인 픽셀만 남깁니다. 이를 통해 Sobel에서 두껍게 나타났던 Gradient 영역이 얇은 선으로 정리됩니다.
+이미지에서도 Sobel 결과에 비해 중복된 선이 크게 감소하고, 실제 경계 위치가 상대적으로 명확하게 표현되는 것을 확인할 수 있습니다.
+
+다만 이 단계에서도 픽셀 값은 여전히 Gradient Magnitude를 유지합니다.
+즉 밝은 선은 상대적으로 강한 Edge이고, 어두운 선은 상대적으로 약한 Edge를 나타냅니다.
+
+### After Double Threshold + Hystersis -> Canny
+
+Canny 결과에서는 Double Threshold를 통해 Edge를 Strong / Weak / Non-edge로 분류한 뒤, Hysteresis를 이용해 Strong Edge와 연결된 Weak Edge만 최종 Edge로 유지합니다.
+
+따라서 NMS 결과와 비교하면 약한 Texture나 독립적인 Gradient 반응이 제거되고, 구조적으로 연결된 주요 경계가 중심적으로 남습니다.
+
+이 단계부터는 Edge의 강도 차이를 표현하는 것이 목적이 아니기 때문에,
+최종 출력은 Binary Edge Map으로 변환되어 일반적으로 다음과 같이 표현됩니다
+
+Edge  =  255
+Non-edge = 0
+
+따라서 원래 Gradient Magnitude가 서로 달랐던 Edge라도 최종적으로 Edge로 판정되면 
+모두 동일한 흰색(255)으로 표시됩니다.
+
+이 때문에 Canny 영상이 Sobel이나 NMS보다 더 밝고 대비가 강하게 보입니다.
+
+Canny에서 Gradient Magnitude 값을 통일하는 이유는, 이후 Edge Detection 결과를 사용하는 입장에서 필요한 정보가 **해당 Edge가 얼마나 강한가**가 아니라 **해당 픽셀이 Edge인가 아닌가**이기 때문입니다.
+
+즉, NMS까지는 **Edge의 위치와 강도에 대한 측정값**을 가지고 있지만, 최종 Canny 결과는 **Edge 여부에 대한 판단값**이라고 볼 수 있습니다.
+
 ---
 
-## 5. Hysteresis Optimization
+## 5. Benchmark Baseline
+
+### Baseline 측정
+
+현재까지의 구현이 단순하게 Canny Edge Detection의 결과를 얻기 위해 직접 코드를 구현한 결과입니다.
+이를 토대로 각 단계의 지연을 측정하여 Benchmark Baseline을 만들고
+병목 지점을 파악하고 간 단계를 최적화 해 나가며 지연 시간을 최적화 하려 합니다.
+
+### 측정 결과
+
+일반적인 프레임 기준 처리 시간은 다음과 같이 나타났습니다.
+
+| 단계 | 처리 시간 |
+| --- | --- |
+| Gray Scale | 약 10~12 ms |
+| Gaussian Blur | 약 26~29 ms |
+| Sobel | 약 32~35 ms |
+| Gradient Magnitude / Direction | 약 17~18 ms |
+| NMS | 약 16~18 ms |
+| Display 변환 | 약 14~16 ms |
+| Double Threshold | 약 5~7 ms |
+| Cleanup | 약 4~6 ms |
+| **Hysteresis** | **약 257~405 ms 이상** |
+
+전체 처리 시간은 장면에 따라 약 **300~500 ms 이상**
+
+---
+
+### 주요 병목: Hysteresis
+
+Hysteresis 반복 횟수와 처리 시간 사이에 강한 상관관계가 나타났다.
+
+```
+Pass 21  → 약 67 ms
+Pass 30  → 약 89 ms
+Pass 44  → 약 114 ms
+Pass 64  → 약 175~190 ms
+Pass 105 → 약 285 ms
+Pass 113 → 약 305 ms
+Pass 137 → 약 354 ms
+Pass 144 → 약 405 ms
+```
+
+현재 구현은 한 번의 Pass마다 전체 프레임을 다시 탐색합니다.
+
+예를 들어 640×480 영상이라면 한 번의 Pass마다 약 30만 픽셀을 확인하며, 100회 반복 시 단순 픽셀 위치 기준으로 약 3천만 회 이상을 재 방문하게 됩니다.
+
+---
+
+## 6-1. Hysteresis Optimization
 
 ### Initial Implementation - Repeated Full Scan
 
@@ -315,7 +401,7 @@ Hysteresis 병목이 크게 감소했습니다.
 
 ---
 
-## 6. Current Performance
+## 6-2. After Optimization
 
 현재 BFS Hysteresis 적용 이후 전체 Single-thread Canny 처리 시간은 약:
 
@@ -339,36 +425,7 @@ Hysteresis 병목이 크게 감소했습니다.
 
 ---
 
-## 7. Benchmark Policy
-
-최적화 전후 비교 시 다음 조건을 최대한 동일하게 유지합니다.
-
-- Release / x64
-- 동일한 입력 Camera
-- 동일한 입력 Resolution
-- 동일한 Threshold
-- Single-thread 기준부터 비교
-- Camera capture 시간 별도
-- `imshow()` 및 Debug visualization 시간 별도
-- 동일한 장면 또는 동일한 영상 입력 사용 권장
-
-성능 측정은 각 Stage별로 기록합니다.
-
-```text
-Gray
-Gaussian
-Sobel
-Gradient
-NMS
-Threshold
-Hysteresis
-Cleanup
-TOTAL
-```
-
----
-
-## 8. Optimization Roadmap
+## 7. Optimization Roadmap
 
 ### Completed
 
@@ -402,7 +459,7 @@ TOTAL
 
 ---
 
-## 9. Git History Strategy
+## 8. Git History Strategy
 
 이 Repository는 최종 코드만 저장하는 것이 아니라 **알고리즘 구현과 최적화 과정을 Commit 단위로 기록**합니다.
 
@@ -436,7 +493,7 @@ git show <commit>
 
 ---
 
-## 10. Project Goal
+## 9. Project Goal
 
 이 프로젝트의 목적은 OpenCV의 완성된 Canny API를 호출하는 것이 아니라, Canny Edge Detection의 각 단계를 직접 구현하면서 다음 내용을 이해하는 것입니다.
 
