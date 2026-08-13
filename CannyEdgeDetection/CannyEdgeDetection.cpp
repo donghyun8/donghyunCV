@@ -7,8 +7,16 @@
 using namespace cv;
 using namespace std;
 
+
+struct pos {
+    int y;
+    int x;
+};
+
 int main()
 {
+    const bool DEBUG_VIEW = false;
+
     using Clock = chrono::steady_clock;
 
     VideoCapture cap(0);
@@ -321,20 +329,6 @@ int main()
 
         auto t5 = Clock::now();
 
-        Mat magnitudeDisplay(
-            gray.rows,
-            gray.cols,
-            CV_8UC1,
-            Scalar(0)
-        );
-
-        Mat nmsDisplay(
-            gray.rows,
-            gray.cols,
-            CV_8UC1,
-            Scalar(0)
-        );
-
         double maxMagnitude = 0;
 
         for (int y = 0; y < magnitude.rows; y++)
@@ -346,29 +340,6 @@ int main()
 
                 if (value > maxMagnitude)
                     maxMagnitude = value;
-            }
-        }
-
-        for (int y = 0; y < magnitude.rows; y++)
-        {
-            for (int x = 0; x < magnitude.cols; x++)
-            {
-                if (maxMagnitude > 0)
-                {
-                    magnitudeDisplay.at<unsigned char>(y, x) =
-                        static_cast<unsigned char>(
-                            magnitude.at<float>(y, x) /
-                            maxMagnitude *
-                            255.0
-                            );
-
-                    nmsDisplay.at<unsigned char>(y, x) =
-                        static_cast<unsigned char>(
-                            nms.at<float>(y, x) /
-                            maxMagnitude *
-                            255.0
-                            );
-                }
             }
         }
 
@@ -387,6 +358,8 @@ int main()
         const unsigned char STRONG = 255;
         const unsigned char WEAK = 75;
 
+        queue<pos> q;
+
         for (int y = 1; y < nms.rows - 1; y++)
         {
             for (int x = 1; x < nms.cols - 1; x++)
@@ -397,6 +370,8 @@ int main()
                 if (value >= ht)
                 {
                     thresholdResult.at<unsigned char>(y, x) = STRONG;
+                    q.push({ y, x });
+
                 }
                 else if (value >= lt)
                 {
@@ -417,68 +392,34 @@ int main()
 
         auto t7 = Clock::now();
 
-        Mat edges =
-            thresholdResult.clone();
+        Mat edges = thresholdResult.clone();
 
         bool changed = true;
 
-        int hysteresisPasses = 0;
+        int processedNodes = 0;
 
-        while (changed)
+        // BFS 로 전환
+        int dx[8] = { -1,-1,-1,0,0,1,1,1 };
+        int dy[8] = { -1, 0, 1,-1,1, -1, 0,1 };
+
+        while (!q.empty())
         {
-            changed = false;
-            hysteresisPasses++;
+            pos now = q.front();
+            q.pop();
 
-            for (int y = 1; y < edges.rows - 1; y++)
+            processedNodes++;
+
+            for (int i = 0; i < 8; i++)
             {
-                for (int x = 1; x < edges.cols - 1; x++)
-                {
-                    if (
-                        edges.at<unsigned char>(
-                            y,
-                            x
-                        ) != WEAK
-                        )
-                    {
-                        continue;
-                    }
+                int ny = now.y + dy[i];
+                int nx = now.x + dx[i];
 
-                    bool connectedToStrong = false;
+                if (edges.at<unsigned char>(ny, nx) != WEAK)
+                    continue;
 
-                    for (int ky = -1; ky <= 1; ky++)
-                    {
-                        for (int kx = -1; kx <= 1; kx++)
-                        {
-                            if (
-                                ky == 0 &&
-                                kx == 0
-                                )
-                            {
-                                continue;
-                            }
+                edges.at<unsigned char>(ny, nx) = STRONG;
 
-                            if (
-                                edges.at<unsigned char>(
-                                    y + ky,
-                                    x + kx
-                                ) == STRONG
-                                )
-                            {
-                                connectedToStrong = true;
-                            }
-                        }
-                    }
-
-                    if (connectedToStrong)
-                    {
-                        edges.at<unsigned char>(
-                            y,
-                            x
-                        ) = STRONG;
-
-                        changed = true;
-                    }
-                }
+                q.push({ ny, nx });
             }
         }
 
@@ -505,6 +446,58 @@ int main()
 
         auto t9 = Clock::now();
 
+        if (DEBUG_VIEW)
+        {
+            Mat magnitudeDisplay(
+                gray.rows,
+                gray.cols,
+                CV_8UC1,
+                Scalar(0)
+            );
+
+            Mat nmsDisplay(
+                gray.rows,
+                gray.cols,
+                CV_8UC1,
+                Scalar(0)
+            );
+
+            for (int y = 0; y < magnitude.rows; y++)
+            {
+                for (int x = 0; x < magnitude.cols; x++)
+                {
+                    if (maxMagnitude > 0)
+                    {
+                        magnitudeDisplay.at<unsigned char>(y, x) =
+                            static_cast<unsigned char>(
+                                magnitude.at<float>(y, x) /
+                                maxMagnitude *
+                                255.0
+                                );
+
+                        nmsDisplay.at<unsigned char>(y, x) =
+                            static_cast<unsigned char>(
+                                nms.at<float>(y, x) /
+                                maxMagnitude *
+                                255.0
+                                );
+                    }
+                }
+            }
+
+            imshow(
+                "Sobel Magnitude",
+                magnitudeDisplay
+            );
+
+            imshow(
+                "NMS",
+                nmsDisplay
+            );
+        }
+        auto t10 = Clock::now();
+
+
         auto getMs = [](auto start, auto end)
             {
                 return chrono::duration<double, milli>(
@@ -517,7 +510,7 @@ int main()
         if (frameCount % 30 == 0)
         {
             double total =
-                getMs(t0, t9);
+                getMs(t0, t10);
 
             cout
                 << fixed
@@ -532,7 +525,7 @@ int main()
                 << getMs(t3, t4)
                 << " ms | NMS: "
                 << getMs(t4, t5)
-                << " ms | DisplayPrep: "
+                << " ms | CannyDisplayPrep: "
                 << getMs(t5, t6)
                 << " ms | Threshold: "
                 << getMs(t6, t7)
@@ -540,24 +533,17 @@ int main()
                 << getMs(t7, t8)
                 << " ms | Cleanup: "
                 << getMs(t8, t9)
+                << " ms | Debug: "
+                << getMs(t9, t10)
                 << " ms | TOTAL: "
                 << total
                 << " ms | FPS: "
                 << (1000.0 / total)
-                << " | Hysteresis Passes: "
-                << hysteresisPasses
+                << " | processedNodes: "
+                << processedNodes
                 << endl;
         }
 
-        imshow(
-            "Sobel Magnitude",
-            magnitudeDisplay
-        );
-
-        imshow(
-            "NMS",
-            nmsDisplay
-        );
 
         imshow(
             "Canny Final",
