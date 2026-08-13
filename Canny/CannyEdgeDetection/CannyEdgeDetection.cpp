@@ -27,6 +27,10 @@ int main()
         return -1;
     }
 
+    cap.set(CAP_PROP_FRAME_WIDTH, 640);
+    cap.set(CAP_PROP_FRAME_HEIGHT, 480);
+    cap.set(CAP_PROP_FPS, 30);
+
     Mat frame;
 
     int frameCount = 0;
