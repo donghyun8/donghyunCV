@@ -306,6 +306,7 @@ Hysteresis에서는 **Strong Edge와 연결된 Weak Edge만 최종 Edge로 유�
 ```text
 Edge      = 255
 Non-edge  = 0
+```
 
 ---
 
