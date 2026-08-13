@@ -256,42 +256,56 @@ Non Edge    = 0
 Weak Edge 중 Strong Edge와 연결된 픽셀만 Strong Edge로 변경 후, 
 최종적으로 Strong Edge만 Edge Node로 처리합니다.
 
+## Visual Comparison
+
 <img width="2874" height="1016" alt="sobel_nms_canny" src="https://github.com/user-attachments/assets/b553ea45-e24c-4deb-8b24-fd246b750e3b" />
-이미지는 왼쪽부터 **Sobel Gradient Magnitude → Non-Maximum Suppression(NMS) → 최종 Canny Edge Map** 순서입니다. 
 
-### Sobel Gradient Magnitude
+> 왼쪽부터 **Sobel Gradient Magnitude → Non-Maximum Suppression → Canny Edge Map**
 
-Sobel 단계에서는 영상의 밝기 변화율을 계산하여 경계 후보를 검출하기 때문인데, 
-한 프레임에서도 여러 픽셀이 동시에 큰 Gradient 값을 가지면서 선이 두껍거나 여러 겹으로 보일 수 있습니다. 또한, Sobel -> NMS -> Canny 과정에서 Sobel 가장 다양한 밝기 값을 가진 채로 표현됩니다.
+### 1. Sobel Gradient Magnitude
 
-### Non-Maximum Suppression
+Sobel은 영상의 밝기 변화율을 계산하여 **Edge 후보와 Edge Strength**를 구합니다.
 
-NMS에서는 Gradient 방향을 기준으로 주변 픽셀과 Magnitude를 비교하고, 해당 방향에서 Local Maximum인 픽셀만 남깁니다. 이를 통해 Sobel에서 두껍게 나타났던 Gradient 영역이 얇은 선으로 정리됩니다.
-이미지에서도 Sobel 결과에 비해 중복된 선이 크게 감소하고, 실제 경계 위치가 상대적으로 명확하게 표현되는 것을 확인할 수 있습니다.
+하나의 실제 경계 주변에서도 여러 픽셀이 동시에 큰 Gradient를 가질 수 있기 때문에,
+Edge가 두껍거나 여러 겹으로 표현됩니다.
 
-다만 이 단계에서도 픽셀 값은 여전히 Gradient Magnitude를 유지합니다.
-즉 밝은 선은 상대적으로 강한 Edge이고, 어두운 선은 상대적으로 약한 Edge를 나타냅니다.
+**Result:** `Edge 위치 후보 + Edge Strength`
 
-### After Double Threshold + Hystersis -> Canny
+---
 
-Canny 결과에서는 Double Threshold를 통해 Edge를 Strong / Weak / Non-edge로 분류한 뒤, Hysteresis를 이용해 Strong Edge와 연결된 Weak Edge만 최종 Edge로 유지합니다.
+### 2. Non-Maximum Suppression
 
-따라서 NMS 결과와 비교하면 약한 Texture나 독립적인 Gradient 반응이 제거되고, 구조적으로 연결된 주요 경계가 중심적으로 남습니다.
+NMS는 Gradient 방향을 기준으로 주변 Magnitude와 비교하여  
+**Local Maximum인 픽셀만 유지**합니다.
 
-이 단계부터는 Edge의 강도 차이를 표현하는 것이 목적이 아니기 때문에,
-최종 출력은 Binary Edge Map으로 변환되어 일반적으로 다음과 같이 표현됩니다
+이를 통해 Sobel에서 두껍게 형성된 Gradient 영역이 얇아지고,
+실제 Edge 위치가 보다 명확하게 정리됩니다.
 
-Edge  =  255
-Non-edge = 0
+이 단계에서는 아직 Gradient Magnitude를 유지하기 때문에:
 
-따라서 원래 Gradient Magnitude가 서로 달랐던 Edge라도 최종적으로 Edge로 판정되면 
-모두 동일한 흰색(255)으로 표시됩니다.
+- 밝은 Edge → 상대적으로 강한 Gradient
+- 어두운 Edge → 상대적으로 약한 Gradient
 
-이 때문에 Canny 영상이 Sobel이나 NMS보다 더 밝고 대비가 강하게 보입니다.
+를 의미합니다.
 
-Canny에서 Gradient Magnitude 값을 통일하는 이유는, 이후 Edge Detection 결과를 사용하는 입장에서 필요한 정보가 **해당 Edge가 얼마나 강한가**가 아니라 **해당 픽셀이 Edge인가 아닌가**이기 때문입니다.
+**Result:** `정제된 Edge 위치 + Edge Strength`
 
-즉, NMS까지는 **Edge의 위치와 강도에 대한 측정값**을 가지고 있지만, 최종 Canny 결과는 **Edge 여부에 대한 판단값**이라고 볼 수 있습니다.
+---
+
+### 3. Double Threshold + Hysteresis
+
+Double Threshold를 통해 픽셀을 `Strong / Weak / Non-edge`로 분류하고,
+Hysteresis에서는 **Strong Edge와 연결된 Weak Edge만 최종 Edge로 유지**합니다.
+
+따라서 NMS에 남아 있던 약한 Texture나 독립적인 Gradient 반응은 제거되고,
+구조적으로 연결된 주요 경계가 중심적으로 남습니다.
+
+최종 Canny 결과는 Edge Strength를 표현하는 것이 아니라
+**Edge인지 아닌지를 판단하는 Binary Edge Map**입니다.
+
+```text
+Edge      = 255
+Non-edge  = 0
 
 ---
 
@@ -390,7 +404,25 @@ Push to Queue
 
 이를 통해 반복적인 Full-frame Scan을 제거했습니다.
 
+---
+
+## 6-2. After Optimization
+
 실측 결과:
+
+| 단계 | 평균 |
+|---|---:|
+| Gray | **10.19 ms** |
+| Gaussian | **28.16 ms** |
+| Sobel | **32.21 ms** |
+| Gradient | **16.16 ms** |
+| NMS | **16.26 ms** |
+| DisplayPrep | **2.62 ms** |
+| Threshold | **10.34 ms** |
+| Hysteresis | **6.15 ms** |
+| Cleanup | **4.85 ms** |
+| **TOTAL** | **126.96 ms** |
+| **FPS** | **7.88 FPS** |
 
 ```text
 Before : ~200-300 ms
@@ -398,30 +430,6 @@ After  : ~5-7 ms
 ```
 
 Hysteresis 병목이 크게 감소했습니다.
-
----
-
-## 6-2. After Optimization
-
-현재 BFS Hysteresis 적용 이후 전체 Single-thread Canny 처리 시간은 약:
-
-```text
-~135 ms / frame
-```
-
-수준입니다.
-
-30 FPS 실시간 처리를 목표로 할 경우 한 Frame의 처리 시간은 약:
-
-```text
-33.3 ms
-```
-
-이하여야 합니다.
-
-따라서 현재 구현은 추가 최적화가 필요합니다.
-
-> Camera capture와 Debug visualization은 알고리즘 자체의 처리 시간과 분리하여 측정합니다.
 
 ---
 
