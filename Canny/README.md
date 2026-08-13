@@ -54,15 +54,6 @@ Frame Budget : 33.3 ms/frame
 
 30 FPS 실시간 처리를 목표로 하므로, Canny 연산 자체의 최종 목표 latency는 **33.3 ms/frame 이하**로 설정합니다.
 
-카메라 또는 드라이버가 요청한 설정값을 그대로 적용하지 않을 수 있으므로, 필요 시 실제 적용값을 `VideoCapture::get()`으로 확인합니다.
-
-```cpp
-cout << "Camera: "
-     << cap.get(CAP_PROP_FRAME_WIDTH) << " x "
-     << cap.get(CAP_PROP_FRAME_HEIGHT) << " @ "
-     << cap.get(CAP_PROP_FPS) << " FPS\n";
-```
-
 ### Benchmark Scope
 
 알고리즘 성능 비교 시 다음 Canny 처리 단계만 compute latency에 포함합니다.
