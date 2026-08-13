@@ -52,22 +52,21 @@ int main()
 
         for (int y = 0; y < frame.rows; y++)
         {
-            for (int x = 0; x < frame.cols; x++)
-            {
-                Vec3b pixel = frame.at<Vec3b>(y, x);
+            const Vec3b* src = frame.ptr<Vec3b>(y);
+            
+            const Vec3b* src_end = src + frame.cols;
 
-                unsigned char b = pixel[0];
-                unsigned char g = pixel[1];
-                unsigned char r = pixel[2];
+            uchar* dst = gray.ptr<uchar>(y);
 
-                unsigned char grayValue =
-                    static_cast<unsigned char>(
-                        0.114f * b +
-                        0.587f * g +
-                        0.299f * r
-                        );
+            for (; src < src_end;) {
 
-                gray.at<unsigned char>(y, x) = grayValue;
+                *dst++ = static_cast<uchar>(
+                    0.114f * (*src)[0] +
+                    0.587f * (*src)[1] +
+                    0.299f * (*src)[2]
+                    );
+
+                src++;
             }
         }
 
@@ -88,6 +87,14 @@ int main()
 
         for (int y = 1; y < gray.rows - 1; y++)
         {
+            const uchar* rows[3] = {
+                gray.ptr<uchar>(y - 1),
+                gray.ptr<uchar>(y),
+                gray.ptr<uchar>(y + 1)
+            };
+
+            uchar* dst = blur.ptr<uchar>(y);
+
             for (int x = 1; x < gray.cols - 1; x++)
             {
                 int sum = 0;
@@ -96,11 +103,13 @@ int main()
                 {
                     for (int kx = -1; kx <= 1; kx++)
                     {
-                        int pixelValue =
+                        /*int pixelValue =
                             gray.at<unsigned char>(
                                 y + ky,
                                 x + kx
-                            );
+                            );*/
+
+                        int pixelValue = rows[ky + 1][x + kx];
 
                         int weight =
                             kernel[ky + 1][kx + 1];
@@ -148,6 +157,15 @@ int main()
 
         for (int y = 1; y < blur.rows - 1; y++)
         {
+            const uchar* rows[3] = {
+                blur.ptr<uchar>(y - 1),
+                blur.ptr<uchar>(y),
+                blur.ptr<uchar>(y + 1),
+            };
+
+            short* gxRow = gx.ptr<short>(y);
+            short* gyRow = gy.ptr<short>(y);
+
             for (int x = 1; x < blur.cols - 1; x++)
             {
                 int sumX = 0;
@@ -157,11 +175,7 @@ int main()
                 {
                     for (int kx = -1; kx <= 1; kx++)
                     {
-                        int pixel =
-                            blur.at<unsigned char>(
-                                y + ky,
-                                x + kx
-                            );
+                        int pixel = rows[ky + 1][x + kx];
 
                         int wx =
                             sobelX[ky + 1][kx + 1];
@@ -174,8 +188,8 @@ int main()
                     }
                 }
 
-                gx.at<short>(y, x) = sumX;
-                gy.at<short>(y, x) = sumY;
+                gxRow[x] = static_cast<short>(sumX);
+                gyRow[x] = static_cast<short>(sumY);
             }
         }
 
@@ -195,27 +209,23 @@ int main()
             Scalar(0)
         );
 
-        for (int y = 1; y < gray.rows - 1; y++)
+        for (int y = 0; y < gray.rows; y++)
         {
-            for (int x = 1; x < gray.cols - 1; x++)
+            const short* gxRow = gx.ptr<short>(y);
+            const short* gyRow = gy.ptr<short>(y);
+
+            float* magRow = magnitude.ptr<float>(y);
+            float* angleRow = angle.ptr<float>(y);
+
+            for (int x = 0; x < gray.cols; x++)
             {
-                float sx =
-                    static_cast<float>(
-                        gx.at<short>(y, x)
-                        );
+                float sx = static_cast<float>(gxRow[x]);
+                float sy = static_cast<float>(gyRow[x]);
 
-                float sy =
-                    static_cast<float>(
-                        gy.at<short>(y, x)
-                        );
-
-                float mag =
-                    sqrt(
-                        sx * sx +
-                        sy * sy
-                    );
-
-                magnitude.at<float>(y, x) = mag;
+                float mag = sqrt(
+                    sx * sx +
+                    sy * sy
+                );
 
                 float theta =
                     atan2(sy, sx) *
@@ -225,7 +235,8 @@ int main()
                 if (theta < 0)
                     theta += 180.0f;
 
-                angle.at<float>(y, x) = theta;
+                magRow[x] = mag;
+                angleRow[x] = theta;
             }
         }
 
