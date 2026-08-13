@@ -54,15 +54,6 @@ Frame Budget : 33.3 ms/frame
 
 30 FPS 실시간 처리를 목표로 하므로, Canny 연산 자체의 최종 목표 latency는 **33.3 ms/frame 이하**로 설정합니다.
 
-카메라 또는 드라이버가 요청한 설정값을 그대로 적용하지 않을 수 있으므로, 필요 시 실제 적용값을 `VideoCapture::get()`으로 확인합니다.
-
-```cpp
-cout << "Camera: "
-     << cap.get(CAP_PROP_FRAME_WIDTH) << " x "
-     << cap.get(CAP_PROP_FRAME_HEIGHT) << " @ "
-     << cap.get(CAP_PROP_FPS) << " FPS\n";
-```
-
 ### Benchmark Scope
 
 알고리즘 성능 비교 시 다음 Canny 처리 단계만 compute latency에 포함합니다.
@@ -265,9 +256,110 @@ Non Edge    = 0
 Weak Edge 중 Strong Edge와 연결된 픽셀만 Strong Edge로 변경 후, 
 최종적으로 Strong Edge만 Edge Node로 처리합니다.
 
+## Visual Comparison
+
+<img width="2874" height="1016" alt="sobel_nms_canny" src="https://github.com/user-attachments/assets/b553ea45-e24c-4deb-8b24-fd246b750e3b" />
+
+> 왼쪽부터 **Sobel Gradient Magnitude → Non-Maximum Suppression → Canny Edge Map**
+
+### 1. Sobel Gradient Magnitude
+
+Sobel은 영상의 밝기 변화율을 계산하여 **Edge 후보와 Edge Strength**를 구합니다.
+
+하나의 실제 경계 주변에서도 여러 픽셀이 동시에 큰 Gradient를 가질 수 있기 때문에,
+Edge가 두껍거나 여러 겹으로 표현됩니다.
+
+**Result:** `Edge 위치 후보 + Edge Strength`
+
 ---
 
-## 5. Hysteresis Optimization
+### 2. Non-Maximum Suppression
+
+NMS는 Gradient 방향을 기준으로 주변 Magnitude와 비교하여  
+**Local Maximum인 픽셀만 유지**합니다.
+
+이를 통해 Sobel에서 두껍게 형성된 Gradient 영역이 얇아지고,
+실제 Edge 위치가 보다 명확하게 정리됩니다.
+
+이 단계에서는 아직 Gradient Magnitude를 유지하기 때문에:
+
+- 밝은 Edge → 상대적으로 강한 Gradient
+- 어두운 Edge → 상대적으로 약한 Gradient
+
+를 의미합니다.
+
+**Result:** `정제된 Edge 위치 + Edge Strength`
+
+---
+
+### 3. Double Threshold + Hysteresis
+
+Double Threshold를 통해 픽셀을 `Strong / Weak / Non-edge`로 분류하고,
+Hysteresis에서는 **Strong Edge와 연결된 Weak Edge만 최종 Edge로 유지**합니다.
+
+따라서 NMS에 남아 있던 약한 Texture나 독립적인 Gradient 반응은 제거되고,
+구조적으로 연결된 주요 경계가 중심적으로 남습니다.
+
+최종 Canny 결과는 Edge Strength를 표현하는 것이 아니라
+**Edge인지 아닌지를 판단하는 Binary Edge Map**입니다.
+
+```text
+Edge      = 255
+Non-edge  = 0
+```
+
+---
+
+## 5. Benchmark Baseline
+
+### Baseline 측정
+
+현재까지의 구현이 단순하게 Canny Edge Detection의 결과를 얻기 위해 직접 코드를 구현한 결과입니다.
+이를 토대로 각 단계의 지연을 측정하여 Benchmark Baseline을 만들고
+병목 지점을 파악하고 간 단계를 최적화 해 나가며 지연 시간을 최적화 하려 합니다.
+
+### 측정 결과
+
+일반적인 프레임 기준 처리 시간은 다음과 같이 나타났습니다.
+
+| 단계 | 처리 시간 |
+| --- | --- |
+| Gray Scale | 약 10~12 ms |
+| Gaussian Blur | 약 26~29 ms |
+| Sobel | 약 32~35 ms |
+| Gradient Magnitude / Direction | 약 17~18 ms |
+| NMS | 약 16~18 ms |
+| Display 변환 | 약 14~16 ms |
+| Double Threshold | 약 5~7 ms |
+| Cleanup | 약 4~6 ms |
+| **Hysteresis** | **약 257~405 ms 이상** |
+
+전체 처리 시간은 장면에 따라 약 **300~500 ms 이상**
+
+---
+
+### 주요 병목: Hysteresis
+
+Hysteresis 반복 횟수와 처리 시간 사이에 강한 상관관계가 나타났다.
+
+```
+Pass 21  → 약 67 ms
+Pass 30  → 약 89 ms
+Pass 44  → 약 114 ms
+Pass 64  → 약 175~190 ms
+Pass 105 → 약 285 ms
+Pass 113 → 약 305 ms
+Pass 137 → 약 354 ms
+Pass 144 → 약 405 ms
+```
+
+현재 구현은 한 번의 Pass마다 전체 프레임을 다시 탐색합니다.
+
+예를 들어 640×480 영상이라면 한 번의 Pass마다 약 30만 픽셀을 확인하며, 100회 반복 시 단순 픽셀 위치 기준으로 약 3천만 회 이상을 재 방문하게 됩니다.
+
+---
+
+## 6-1. Hysteresis Optimization
 
 ### Initial Implementation - Repeated Full Scan
 
@@ -313,7 +405,25 @@ Push to Queue
 
 이를 통해 반복적인 Full-frame Scan을 제거했습니다.
 
+---
+
+## 6-2. After Optimization
+
 실측 결과:
+
+| 단계 | 평균 |
+|---|---:|
+| Gray | **10.19 ms** |
+| Gaussian | **28.16 ms** |
+| Sobel | **32.21 ms** |
+| Gradient | **16.16 ms** |
+| NMS | **16.26 ms** |
+| DisplayPrep | **2.62 ms** |
+| Threshold | **10.34 ms** |
+| Hysteresis | **6.15 ms** |
+| Cleanup | **4.85 ms** |
+| **TOTAL** | **126.96 ms** |
+| **FPS** | **7.88 FPS** |
 
 ```text
 Before : ~200-300 ms
@@ -324,60 +434,7 @@ Hysteresis 병목이 크게 감소했습니다.
 
 ---
 
-## 6. Current Performance
-
-현재 BFS Hysteresis 적용 이후 전체 Single-thread Canny 처리 시간은 약:
-
-```text
-~135 ms / frame
-```
-
-수준입니다.
-
-30 FPS 실시간 처리를 목표로 할 경우 한 Frame의 처리 시간은 약:
-
-```text
-33.3 ms
-```
-
-이하여야 합니다.
-
-따라서 현재 구현은 추가 최적화가 필요합니다.
-
-> Camera capture와 Debug visualization은 알고리즘 자체의 처리 시간과 분리하여 측정합니다.
-
----
-
-## 7. Benchmark Policy
-
-최적화 전후 비교 시 다음 조건을 최대한 동일하게 유지합니다.
-
-- Release / x64
-- 동일한 입력 Camera
-- 동일한 입력 Resolution
-- 동일한 Threshold
-- Single-thread 기준부터 비교
-- Camera capture 시간 별도
-- `imshow()` 및 Debug visualization 시간 별도
-- 동일한 장면 또는 동일한 영상 입력 사용 권장
-
-성능 측정은 각 Stage별로 기록합니다.
-
-```text
-Gray
-Gaussian
-Sobel
-Gradient
-NMS
-Threshold
-Hysteresis
-Cleanup
-TOTAL
-```
-
----
-
-## 8. Optimization Roadmap
+## 7. Optimization Roadmap
 
 ### Completed
 
@@ -411,7 +468,7 @@ TOTAL
 
 ---
 
-## 9. Git History Strategy
+## 8. Git History Strategy
 
 이 Repository는 최종 코드만 저장하는 것이 아니라 **알고리즘 구현과 최적화 과정을 Commit 단위로 기록**합니다.
 
@@ -445,7 +502,7 @@ git show <commit>
 
 ---
 
-## 10. Project Goal
+## 9. Project Goal
 
 이 프로젝트의 목적은 OpenCV의 완성된 Canny API를 호출하는 것이 아니라, Canny Edge Detection의 각 단계를 직접 구현하면서 다음 내용을 이해하는 것입니다.
 
