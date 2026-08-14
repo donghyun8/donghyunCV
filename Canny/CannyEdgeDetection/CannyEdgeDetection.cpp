@@ -188,20 +188,61 @@ FrameTiming processCanny(
 
     auto t1 = Clock::now();
 
+    Mat temp(
+        gray.rows,
+        gray.cols,
+        CV_16UC1,
+        Scalar(0)
+    );
+
     Mat blur = Mat::zeros(
         gray.rows,
         gray.cols,
         CV_8UC1
     );
 
-    int kernel[3][3] =
-    {
-        {1, 2, 1},
-        {2, 4, 2},
-        {1, 2, 1}
-    };
+    //int kernel[3][3] =
+    //{
+    //    {1, 2, 1},
+    //    {2, 4, 2},
+    //    {1, 2, 1}
+    //};
 
-    for (int y = 1; y < gray.rows - 1; y++)
+    for (int y = 0; y < gray.rows; ++y)
+    {
+        const uchar* src = gray.ptr<uchar>(y);
+        ushort* tmp = temp.ptr<ushort>(y);
+
+        for (int x = 1; x < gray.cols - 1; ++x)
+        {
+            tmp[x] =
+                src[x - 1] +
+                2 * src[x] +
+                src[x + 1];
+        }
+    }
+
+    for (int y = 1; y < gray.rows - 1; ++y)
+    {
+        const ushort* prev = temp.ptr<ushort>(y - 1);
+        const ushort* curr = temp.ptr<ushort>(y);
+        const ushort* next = temp.ptr<ushort>(y + 1);
+
+        uchar* dst = blur.ptr<uchar>(y);
+
+        for (int x = 1; x < gray.cols - 1; ++x)
+        {
+            int sum =
+                prev[x] +
+                2 * curr[x] +
+                next[x];
+
+            dst[x] =
+                static_cast<uchar>(sum / 16);
+        }
+    }
+
+    /*for (int y = 1; y < gray.rows - 1; y++)
     {
         const uchar* rows[3] =
         {
@@ -228,7 +269,7 @@ FrameTiming processCanny(
 
             dst[x] = static_cast<uchar>(sum / 16);
         }
-    }
+    }*/
 
     auto t2 = Clock::now();
 
@@ -559,7 +600,7 @@ FrameTiming processCanny(
 
 int main()
 {
-    constexpr bool BENCHMARK_MODE = false;
+    constexpr bool BENCHMARK_MODE = true;
     constexpr bool DEBUG_VIEW = false;
 
     constexpr int INPUT_WIDTH = 640;

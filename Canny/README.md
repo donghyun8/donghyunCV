@@ -590,7 +590,149 @@ Gaussian  :  5.67 ms
 
 ---
 
-## 8. Optimization Roadmap
+## 8. 2차 최적화
+
+### 8-1. Separable Gaussian Blur
+
+기존 Gaussian Blur는 다음 3×3 kernel을 2차원 convolution으로 직접 계산했습니다.
+
+```text
+1 2 1
+2 4 2
+1 2 1
+```
+
+이 kernel은 다음 두 개의 1차원 kernel로 분리할 수 있습니다.
+
+```text
+Horizontal : [1 2 1]
+
+Vertical   : [1 2 1]^T
+```
+
+따라서 기존의 3×3 convolution을 다음 두 단계로 변경했습니다.
+
+```text
+Gray
+ ↓
+Horizontal [1 2 1]
+ ↓
+Intermediate Buffer (16-bit)
+ ↓
+Vertical [1 2 1]
+ ↓
+/ 16
+ ↓
+Blur
+```
+
+Horizontal pass의 최대값은 다음과 같습니다.
+
+```text
+255 + 2×255 + 255 = 1020
+```
+
+따라서 중간 결과는 `CV_16UC1`에 저장하고, Vertical pass까지 완료한 뒤 마지막에 `/16`을 적용하여 `CV_8UC1` 결과로 변환했습니다.
+
+구현 예시는 다음과 같습니다.
+
+```cpp
+Mat temp(
+    gray.rows,
+    gray.cols,
+    CV_16UC1,
+    Scalar(0)
+);
+
+Mat blur = Mat::zeros(
+    gray.rows,
+    gray.cols,
+    CV_8UC1
+);
+
+// Horizontal
+for (int y = 0; y < gray.rows; ++y)
+{
+    const uchar* src = gray.ptr<uchar>(y);
+    ushort* tmp = temp.ptr<ushort>(y);
+
+    for (int x = 1; x < gray.cols - 1; ++x)
+    {
+        tmp[x] =
+            src[x - 1] +
+            2 * src[x] +
+            src[x + 1];
+    }
+}
+
+// Vertical
+for (int y = 1; y < gray.rows - 1; ++y)
+{
+    const ushort* prev = temp.ptr<ushort>(y - 1);
+    const ushort* curr = temp.ptr<ushort>(y);
+    const ushort* next = temp.ptr<ushort>(y + 1);
+
+    uchar* dst = blur.ptr<uchar>(y);
+
+    for (int x = 1; x < gray.cols - 1; ++x)
+    {
+        int sum =
+            prev[x] +
+            2 * curr[x] +
+            next[x];
+
+        dst[x] =
+            static_cast<uchar>(sum / 16);
+    }
+}
+```
+
+#### Benchmark Result
+
+Separable Gaussian 적용 후 동일한 fixed-video benchmark를 다시 수행했습니다.
+
+| Stage | Mean (ms) | P50 (ms) | P95 (ms) |
+|---|---:|---:|---:|
+| Gray | 2.43 | 2.40 | 2.67 |
+| **Gaussian** | **0.81** | **0.80** | **0.87** |
+| Sobel | 6.61 | 6.57 | 7.07 |
+| Gradient | 9.87 | 9.79 | 10.78 |
+| NMS | 15.65 | 15.56 | 16.95 |
+| Threshold | 7.83 | 7.53 | 9.66 |
+| Hysteresis | 3.81 | 3.61 | 6.71 |
+| Cleanup | 4.60 | 4.53 | 4.98 |
+| **TOTAL** | **51.61** | **50.88** | **56.16** |
+
+```text
+Mean FPS      : 19.38 FPS
+30 FPS Budget : 33.33 ms/frame
+P95 Status    : FAIL (56.16 ms)
+```
+
+직전 fixed-video benchmark에서 Gaussian은 다음과 같이 측정되었습니다.
+
+```text
+Before : Mean 5.67 ms / P50 4.64 ms / P95 11.45 ms
+After  : Mean 0.81 ms / P50 0.80 ms / P95 0.87 ms
+```
+
+동일한 알고리즘 결과를 유지하면서, 2D generic convolution을 두 번의 fixed 1D convolution으로 변경한 뒤 Gaussian 단계의 지연이 크게 감소했습니다.
+
+이번 변경은 단순히 3×3의 9개 tap을 3+3개의 6개 tap으로 줄인 것뿐 아니라,
+
+- `ky / kx` 중첩 반복 제거
+- `kernel[][]` lookup 제거
+- 고정 계수 연산으로 단순화
+- 연속적인 Row Pointer 접근
+- Compiler가 최적화하기 쉬운 규칙적인 연산 구조
+
+를 함께 만들었다는 점에서 효과가 컸던 것으로 판단합니다.
+
+이번 결과에서 확인한 핵심은 Pointer 표현을 조금 더 단순화하는 micro optimization보다, **kernel의 수학적 성질을 이용해 연산 구조 자체를 변경하는 structural optimization이 훨씬 큰 효과를 낼 수 있다는 점**입니다.
+
+---
+
+## 9. Optimization Roadmap
 
 ### Completed
 
@@ -630,7 +772,7 @@ Gaussian  :  5.67 ms
 
 ---
 
-## 9. Git History Strategy
+## 10. Git History Strategy
 
 이 Repository는 최종 코드만 저장하는 것이 아니라 **알고리즘 구현과 최적화 과정을 Commit 단위로 기록**합니다.
 
@@ -668,7 +810,7 @@ git show <commit>
 
 ---
 
-## 10. Project Goal
+## 11. Project Goal
 
 이 프로젝트의 목적은 OpenCV의 완성된 Canny API를 호출하는 것이 아니라, Canny Edge Detection의 각 단계를 직접 구현하면서 다음 내용을 이해하는 것입니다.
 
