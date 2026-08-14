@@ -20,30 +20,30 @@ OpenCV의 `cv::Canny()`를 사용하지 않고 Grayscale, Gaussian Blur, Sobel G
 | Package Manager | vcpkg |
 | CPU | Intel(R) Core(TM) Ultra 9 185H @ 2.50 GHz |
 | Memory | 64 GB RAM |
-| Camera | Built-in Laptop Webcam |
-| Input Resolution | 640 × 480 |
-| Target Input FPS | 30 FPS |
+| Live Input | Built-in Laptop Webcam |
+| Benchmark Input | Fixed 640 × 480 / 30 FPS video |
+| Benchmark Frames | 300 frames (~10 s) |
+| Benchmark Repeats | Warm-up 1 pass + Measured 5 passes |
+| Benchmark Samples | 1,500 frames |
 | Processing | Single-thread CPU |
 | Power | AC adapter connected |
 | Windows Power Mode | Balanced |
 | Debug Visualization | Disabled during benchmark |
-| Camera Capture Latency | Excluded from Canny compute latency |
+| Video Decode / Frame I/O | Excluded from Canny compute latency |
 
 > 성능 측정값은 Debug가 아닌 **Release / x64** 빌드를 기준으로 기록합니다.
 
 > 노트북의 전원 상태에 따라 CPU 동작 클럭과 성능이 달라질 수 있으므로, 모든 성능 비교는 **AC 어댑터를 연결한 상태**에서 수행합니다. Windows 전원 모드는 **Balanced**로 고정하여 실험 간 조건을 동일하게 유지합니다.
 
-### Camera Input
+### Input & Benchmark Conditions
 
-입력 조건을 코드에서 명시적으로 고정합니다.
+실시간 동작 확인 시에는 노트북 웹캠을 사용하며 입력 조건을 다음과 같이 고정합니다.
 
 ```cpp
 cap.set(CAP_PROP_FRAME_WIDTH, 640);
 cap.set(CAP_PROP_FRAME_HEIGHT, 480);
 cap.set(CAP_PROP_FPS, 30);
 ```
-
-Benchmark 기준 입력은 다음과 같습니다.
 
 ```text
 Resolution   : 640 × 480
@@ -53,6 +53,21 @@ Frame Budget : 33.3 ms/frame
 ```
 
 30 FPS 실시간 처리를 목표로 하므로, Canny 연산 자체의 최종 목표 latency는 **33.3 ms/frame 이하**로 설정합니다.
+
+실시간 웹캠은 동작 확인용으로 사용하고, 최적화 전후의 정량 비교는 **고정된 benchmark video**를 사용합니다.
+
+```text
+Benchmark Video : 640 × 480 / 30 FPS
+Frames          : 300 frames (~10 s)
+Warm-up         : 1 full pass
+Measured        : 5 full passes
+Samples         : 1,500 frames
+Metrics         : Mean / P50 / P95
+```
+
+Benchmark 시작 전에 영상 전체를 decode하여 RAM에 저장한 뒤, 동일한 300개 Frame sequence를 반복 처리합니다.
+
+따라서 Video decode / File I/O / Camera capture는 Canny compute latency에 포함하지 않으며, 최적화 전후에 항상 동일한 입력을 사용합니다.
 
 ### Benchmark Scope
 
@@ -71,7 +86,7 @@ Grayscale
 
 다음 항목은 Canny compute latency와 분리합니다.
 
-- Camera frame acquisition
+- Camera / video frame acquisition and video decoding
 - Debug image normalization
 - `imshow()`
 - GUI processing
@@ -359,9 +374,13 @@ Pass 144 → 약 405 ms
 
 ---
 
-## 6-1. Hysteresis Optimization
+## 6. 1차 최적화
 
-### Initial Implementation - Repeated Full Scan
+초기 Baseline에서 가장 큰 병목이었던 Hysteresis를 우선 개선한 뒤, 실제 Canny 연산과 무관한 Debug 경로를 분리하고 반복적인 픽셀 접근이 많은 구간에 row pointer 접근을 적용했습니다.
+
+### 6-1. Hysteresis Optimization
+
+#### Initial Implementation - Repeated Full Scan
 
 초기 구현은 Strong Edge와 연결된 Weak Edge가 더 이상 발견되지 않을 때까지 전체 Frame을 반복 탐색했습니다.
 
@@ -385,7 +404,7 @@ while changed
 
 가 소요되었으며, 복잡한 장면에서는 더 큰 지연과 jitter가 발생했습니다.
 
-### BFS Hysteresis
+#### BFS Hysteresis
 
 Strong Edge들을 Queue에 넣은 후 주변 8-neighbor Weak Edge만 탐색하도록 변경했습니다.
 
@@ -405,36 +424,173 @@ Push to Queue
 
 이를 통해 반복적인 Full-frame Scan을 제거했습니다.
 
----
-
-## 6-2. After Optimization
-
-실측 결과:
-
-| 단계 | 평균 |
-|---|---:|
-| Gray | **10.19 ms** |
-| Gaussian | **28.16 ms** |
-| Sobel | **32.21 ms** |
-| Gradient | **16.16 ms** |
-| NMS | **16.26 ms** |
-| DisplayPrep | **2.62 ms** |
-| Threshold | **10.34 ms** |
-| Hysteresis | **6.15 ms** |
-| Cleanup | **4.85 ms** |
-| **TOTAL** | **126.96 ms** |
-| **FPS** | **7.88 FPS** |
-
 ```text
 Before : ~200-300 ms
 After  : ~5-7 ms
 ```
 
-Hysteresis 병목이 크게 감소했습니다.
+Hysteresis가 전체 Pipeline의 절대적인 병목이던 상태에서, 다른 단계들과 비슷한 수준의 비용으로 감소했습니다.
+
+### 6-2. Debug Visualization 분리
+
+Hysteresis 최적화와 함께, Magnitude / NMS 확인을 위해 사용하던 다음 Debug 작업을 `DEBUG_VIEW` 조건 내부로 이동했습니다.
+
+```text
+maxMagnitude 탐색
+→ Display용 Mat 생성
+→ 0~255 범위 변환
+→ imshow()
+```
+
+이 작업들은 Canny 결과를 계산하는 데 필요한 연산이 아니라 중간 결과를 시각적으로 확인하기 위한 작업입니다.
+
+기존에는 Debug 화면을 사용하지 않는 상황에서도 일부 Display 변환 작업이 실행되어 **대략 10 ms 수준의 불필요한 비용**이 발생했습니다. 이를 Debug 경로로 완전히 분리하여 `DEBUG_VIEW = false`인 Benchmark에서는 실행되지 않도록 변경했습니다.
+
+> 이 변경은 Canny 알고리즘 자체를 빠르게 만든 최적화라기보다, **측정 범위를 실제 알고리즘 compute**만 잡도록 수정한 부분입니다.
+
+### 6-3. `Mat::at()` → Row Pointer Access
+
+다음으로 픽셀 단위 반복 접근이 많은 구간에서 `Mat::at()` 호출을 줄이고, 각 Row의 시작 주소를 한 번 얻은 뒤 Pointer를 통해 연속적으로 접근하도록 변경했습니다.
+
+예를 들어:
+
+```cpp
+const uchar* src = gray.ptr<uchar>(y);
+uchar* dst = blur.ptr<uchar>(y);
+
+for (int x = 1; x < gray.cols - 1; ++x)
+{
+    // src[x - 1], src[x], src[x + 1]
+}
+```
+
+형태로 접근하도록 수정했습니다.
+
+특히 **Gaussian Blur와 Sobel처럼 한 Frame에서 주변 픽셀을 반복해서 읽는 연산에서 예상보다 큰 성능 개선**이 확인되었고, Grayscale 등 연속적인 Row 접근이 가능한 구간에도 같은 방식을 적용했습니다.
+
+현재 코드는 모든 Stage를 Pointer 방식으로 변경한 상태는 아니며, NMS / Threshold / Cleanup 등에는 아직 추가 적용 여지가 남아 있습니다.
+
+#### 추가 Pointer 순차 접근 실험
+
+Row Pointer 적용 이후에는 다음 글을 참고하여, Indexing과 중간 변수를 더 줄이고 Pointer 자체를 증가시키면서 순차 접근하는 형태도 추가로 실험했습니다.
+
+- 참고: https://blog.naver.com/dorergiverny/223037431607
+
+예를 들어 다음과 같이 현재 위치를 가리키는 Pointer를 직접 증가시키는 형태입니다.
+
+```cpp
+for (; src < src_end; )
+{
+    *dst++ = /* operation using *src */;
+    ++src;
+}
+```
+
+하지만 **이미 Row Pointer 접근을 적용한 상태에서 Pointer 변수를 더 단순화하고 순차 접근 형태로 변경한 추가 최적화의 이득은 미미했습니다.**
+
+현재 실험에서는 메모리 접근 방식 자체보다 각 Stage가 수행하는 연산의 성격이 더 큰 영향을 주는 것으로 판단했습니다.
+
+- Gaussian / Sobel: 3×3 convolution 연산
+- Gradient: `sqrt()` / `atan2()`
+- NMS: 방향 분기와 주변 Magnitude 비교
+- Threshold: 전체 Frame 조건 분기
+
+즉 `Mat::at()`에서 Row Pointer로 변경할 때는 반복적인 접근 overhead를 줄이며 의미 있는 개선을 얻었지만, 그 이후 Pointer 표현 자체를 더 단순화하는 것은 현재 Pipeline의 주요 병목을 직접 줄이지 못했습니다.
+
+#### Stage별 Pointer 적용 결과
+
+동일한 알고리즘 구조를 유지한 상태에서 `Mat::at()` 기반 픽셀 접근을 Row Pointer 방식으로 변경하여 각 Stage의 처리 시간을 비교했습니다.
+
+현재까지 Grayscale / Gaussian Blur / Sobel / Gradient 단계에 순차적으로 적용했으며, Live profiling 기준으로 다음과 같은 감소가 확인되었습니다.
+
+| Stage | `Mat::at()` 기반 | Row Pointer 적용 | 감소량 | 감소율 |
+|---|---:|---:|---:|---:|
+| Grayscale | ~10.2 ms | ~3.0 ms | ~7.2 ms | ~71% |
+| Gaussian Blur | ~28.2 ms | ~6.4 ms | ~21.8 ms | ~77% |
+| Sobel | ~32.2 ms | ~10~12 ms | ~20~22 ms | ~65% |
+| Gradient | ~16.2 ms | ~10 ms | ~6 ms | ~38% |
+
+특히 Gaussian Blur와 Sobel에서 큰 감소가 확인되었습니다.
+
+Gaussian Blur와 Sobel은 각 출력 픽셀을 계산하기 위해 주변 `3 × 3` 영역을 반복적으로 참조하므로, 기존 구현에서는 하나의 출력 픽셀을 계산하는 과정에서도 `Mat::at()`가 여러 번 호출되었습니다.
+
+따라서 Row 시작 주소를 한 번 얻은 뒤 다음과 같이 직접 접근하도록 변경하면서 반복적인 픽셀 접근 비용을 크게 줄일 수 있었습니다.
 
 ---
 
-## 7. Optimization Roadmap
+## 7. Reproducible Fixed-Video Benchmark
+
+기존 Live profiling은 Camera 장면이 계속 변하기 때문에 최적화 전후를 완전히 동일한 입력으로 비교하기 어려웠습니다.
+
+특히 Hysteresis는 실제 Strong / Weak Edge 수에 따라 탐색량이 달라질 수 있으므로, 이후 최적화 효과를 재현 가능하게 비교하기 위해 **고정된 640 × 480 Benchmark video**를 도입했습니다.
+
+### 7-1. Benchmark Method
+
+```text
+Input           : Fixed 640 × 480 / 30 FPS video
+Frames          : 300 frames (~10 s)
+Warm-up         : 1 full pass
+Measured Passes : 5 full passes
+Samples         : 1,500 frames
+Build           : Release / x64
+Processing      : Single-thread CPU
+Decode / I/O    : Excluded
+Debug / GUI     : Excluded
+Metrics         : Mean / P50 / P95
+```
+
+Benchmark 시작 전에 300개 Frame을 모두 decode하여 RAM에 적재합니다.
+
+이후 동일한 Frame sequence를 1회 Warm-up한 뒤 5회 반복 측정하여 총 1,500개의 Stage latency sample을 수집합니다.
+
+`Mean`뿐 아니라 `P50`, `P95`를 함께 기록하여 평균적인 처리 시간과 Tail latency를 같이 확인합니다.
+
+### 7-2. Current Benchmark Baseline
+
+현재 Benchmark에는 다음 변경사항이 이미 반영되어 있습니다.
+
+- BFS 기반 Hysteresis
+- Debug visualization compute 경로 분리
+- Grayscale / Gaussian / Sobel 등의 Row Pointer 접근
+- Fixed-video preload 및 반복 측정
+
+실측 결과:
+
+| Stage | Mean (ms) | P50 (ms) | P95 (ms) |
+|---|---:|---:|---:|
+| Gray | 3.21 | 2.74 | 6.08 |
+| Gaussian | 5.67 | 4.64 | 11.45 |
+| Sobel | 8.26 | 6.84 | 16.06 |
+| Gradient | 12.30 | 10.73 | 21.48 |
+| NMS | **18.84** | **16.21** | **33.83** |
+| Threshold | 9.84 | 9.01 | 16.75 |
+| Hysteresis | 4.77 | 4.20 | 9.28 |
+| Cleanup | 5.87 | 4.94 | 11.28 |
+| **TOTAL** | **68.76** | **60.27** | **115.52** |
+
+```text
+Mean FPS      : 14.54 FPS
+30 FPS Budget : 33.33 ms/frame
+P95 Status    : FAIL (115.52 ms)
+```
+
+**벤치마크 적용과 관련해서 코드 구조 변경 등에는 AI를 적극 활용하였습니다**
+
+### 7-3. Bottleneck after Benchmark Standardization
+
+초기에는 Hysteresis가 압도적인 병목이었지만, BFS 전환 이후 현재 Benchmark에서 가장 큰 평균 비용은 다음 순서로 나타났습니다.
+
+```text
+NMS       : 18.84 ms
+Gradient  : 12.30 ms
+Threshold :  9.84 ms
+Sobel     :  8.26 ms
+Gaussian  :  5.67 ms
+```
+
+---
+
+## 8. Optimization Roadmap
 
 ### Completed
 
@@ -447,11 +603,17 @@ Hysteresis 병목이 크게 감소했습니다.
 - [x] Iterative Full-scan Hysteresis
 - [x] Queue/BFS Hysteresis
 - [x] Stage-level latency profiling
+- [x] Separate Debug visualization from algorithm benchmark
+- [x] Row Pointer access in Grayscale / Gaussian / Sobel hot loops
+- [x] Sequential Pointer-walking experiment
+- [x] Fixed-video Benchmark harness
+- [x] Frame preload to exclude Decode / I/O
+- [x] Warm-up + repeated measurement
+- [x] Mean / P50 / P95 latency reporting
 
 ### Single-thread Optimization
 
-- [x] Separate Debug visualization from algorithm benchmark
-- [ ] `Mat::at()` → row pointer access
+- [ ] Extend Row Pointer access to NMS / Threshold / Cleanup
 - [ ] Reuse intermediate buffers
 - [ ] Separable Gaussian Blur
 - [ ] Simplify fixed Sobel convolution
@@ -468,18 +630,22 @@ Hysteresis 병목이 크게 감소했습니다.
 
 ---
 
-## 8. Git History Strategy
+## 9. Git History Strategy
 
 이 Repository는 최종 코드만 저장하는 것이 아니라 **알고리즘 구현과 최적화 과정을 Commit 단위로 기록**합니다.
 
 예시:
 
 ```text
-Canny:Baseline
+Canny: Baseline
 
-Replace hysteresis with BFS
+Optimize: replace repeated hysteresis scan with BFS
 
-Pinned Camera Setting
+Optimize: separate debug visualization from compute path
+
+Optimize: apply row pointer access to hot loops
+
+Benchmark: add reproducible fixed-video benchmark harness
 ```
 
 각 버전의 변경사항은 Git diff를 통해 비교할 수 있습니다.
@@ -502,7 +668,7 @@ git show <commit>
 
 ---
 
-## 9. Project Goal
+## 10. Project Goal
 
 이 프로젝트의 목적은 OpenCV의 완성된 Canny API를 호출하는 것이 아니라, Canny Edge Detection의 각 단계를 직접 구현하면서 다음 내용을 이해하는 것입니다.
 
