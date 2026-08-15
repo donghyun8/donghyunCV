@@ -394,54 +394,68 @@ FrameTiming processCanny(
 
     for (int y = 1; y < gray.rows - 1; y++)
     {
+        const float* prev = magnitude.ptr<float>(y - 1);
+        const float* current = magnitude.ptr<float>(y);
+        const float* next = magnitude.ptr<float>(y + 1);
+        float* dst = nms.ptr<float>(y);
+        const float* theta = angle.ptr<float>(y);
+
         for (int x = 1; x < gray.cols - 1; x++)
         {
-            float current = magnitude.at<float>(y, x);
-            float theta = angle.at<float>(y, x);
+            //float current = magnitude.at<float>(y, x);
+            //float theta = angle.at<float>(y, x);
 
             float neighbor1 = 0.0f;
             float neighbor2 = 0.0f;
 
             if (
-                (theta >= 0.0f && theta < 22.5f) ||
-                (theta >= 157.5f && theta <= 180.0f)
+                (theta[x] >= 0.0f && theta[x] < 22.5f) ||
+                (theta[x] >= 157.5f && theta[x] <= 180.0f)
                 )
             {
-                neighbor1 = magnitude.at<float>(y, x - 1);
-                neighbor2 = magnitude.at<float>(y, x + 1);
+                neighbor1 = current[x - 1];
+                neighbor2 = current[x + 1];
+                //neighbor1 = magnitude.at<float>(y, x - 1);
+                //neighbor2 = magnitude.at<float>(y, x + 1);
             }
             else if (
-                theta >= 22.5f &&
-                theta < 67.5f
+                theta[x] >= 22.5f &&
+                theta[x] < 67.5f
                 )
             {
-                neighbor1 = magnitude.at<float>(y - 1, x - 1);
-                neighbor2 = magnitude.at<float>(y + 1, x + 1);
+                neighbor1 = prev[x - 1];
+                neighbor2 = next[x + 1];
+                //neighbor1 = magnitude.at<float>(y - 1, x - 1);
+                //neighbor2 = magnitude.at<float>(y + 1, x + 1);
             }
             else if (
-                theta >= 67.5f &&
-                theta < 112.5f
+                theta[x] >= 67.5f &&
+                theta[x] < 112.5f
                 )
             {
-                neighbor1 = magnitude.at<float>(y - 1, x);
-                neighbor2 = magnitude.at<float>(y + 1, x);
+                neighbor1 = prev[x];
+                neighbor2 = next[x];
+                //neighbor1 = magnitude.at<float>(y - 1, x);
+                //neighbor2 = magnitude.at<float>(y + 1, x);
             }
             else
             {
-                neighbor1 = magnitude.at<float>(y - 1, x + 1);
-                neighbor2 = magnitude.at<float>(y + 1, x - 1);
+                neighbor1 = prev[x + 1];
+                neighbor2 = next[x - 1];
+                //neighbor1 = magnitude.at<float>(y - 1, x + 1);
+                //neighbor2 = magnitude.at<float>(y + 1, x - 1);
             }
 
             if (
-                current >= neighbor1 &&
-                current >= neighbor2
+                current[x] >= neighbor1 &&
+                current[x] >= neighbor2
                 )
             {
-                nms.at<float>(y, x) = current;
+                dst[x] = current[x];
             }
             else
             {
-                nms.at<float>(y, x) = 0.0f;
+                dst[x] = 0.0f;
             }
         }
     }
@@ -600,7 +614,7 @@ FrameTiming processCanny(
 
 int main()
 {
-    constexpr bool BENCHMARK_MODE = true;
+    constexpr bool BENCHMARK_MODE = false;
     constexpr bool DEBUG_VIEW = false;
 
     constexpr int INPUT_WIDTH = 640;
